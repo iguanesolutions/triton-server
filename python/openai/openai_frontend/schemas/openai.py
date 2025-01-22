@@ -137,6 +137,10 @@ class CreateCompletionRequest(BaseModel):
         False,
         description="Whether to stream back partial progress. If set, tokens will be sent as data-only [server-sent events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events#Event_stream_format) as they become available, with the stream terminated by a `data: [DONE]` message. [Example Python code](https://cookbook.openai.com/examples/how_to_stream_completions).\n",
     )
+    stream_options: Optional[CreateChatCompletionStreamOptions] = Field(
+        None,
+        description="Streaming options for the completion.",
+    )
     suffix: Optional[str] = Field(
         None,
         description="The suffix that comes after a completion of inserted text.\n\nThis parameter is only supported for `gpt-3.5-turbo-instruct`.\n",
