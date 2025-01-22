@@ -29,10 +29,12 @@ from __future__ import annotations
 
 import time
 import uuid
+import json
 from dataclasses import dataclass
 from typing import Any, AsyncIterable, AsyncIterator, Callable, Dict, List, Optional
 
 import tritonserver
+import re
 from engine.engine import LLMEngine
 from engine.utils.tokenizer import get_tokenizer
 from engine.utils.triton import (
@@ -42,22 +44,28 @@ from engine.utils.triton import (
     _validate_triton_responses_non_streaming,
 )
 from schemas.openai import (
+    CompletionUsage,
     ChatCompletionChoice,
     ChatCompletionFinishReason,
+    ChatCompletionMessageToolCall,
+    ChatCompletionMessageToolCalls,
     ChatCompletionResponseMessage,
     ChatCompletionStreamingResponseChoice,
     ChatCompletionStreamResponseDelta,
+    ChatCompletionMessageToolCallChunk,
+    ChatCompletionToolChoiceOption1,
     Choice,
-    CompletionUsage,
     CreateChatCompletionRequest,
     CreateChatCompletionResponse,
-    CreateChatCompletionStreamOptions,
     CreateChatCompletionStreamResponse,
+    CreateChatCompletionStreamOptions,
     CreateCompletionRequest,
     CreateCompletionResponse,
     FinishReason,
+    Function1,
+    Function2,
     Model,
-    ObjectType,
+    ObjectType
 )
 
 
@@ -122,12 +130,21 @@ class TritonLLMEngine(LLMEngine):
         conversation = [
             message.model_dump(exclude_none=True) for message in request.messages
         ]
-        add_generation_prompt = True
 
+        if request.tools is not None and request.tool_choice.root != ChatCompletionToolChoiceOption1.none:
+            tools = []
+            for chatcompletiontool in request.tools:
+                tool_def = chatcompletiontool.model_dump(exclude={'type'})
+                tool_def['type'] = "function"
+                tools.append(tool_def)
+        else:
+            tools = None
+        add_generation_prompt = True
         prompt = metadata.tokenizer.apply_chat_template(
             conversation=conversation,
             tokenize=False,
             add_generation_prompt=add_generation_prompt,
+            tools=tools
         )
 
         # Convert to Triton request format and perform inference
@@ -145,18 +162,47 @@ class TritonLLMEngine(LLMEngine):
 
         if request.stream:
             return self._streaming_chat_iterator(
-                request_id, created, request.model, role, responses, prompt, request.stream_options
+                request_id, created, request.model, role, responses, prompt, request.stream_options,
             )
 
         # Response validation with decoupled models in mind
         responses = [response async for response in responses]
         _validate_triton_responses_non_streaming(responses)
+
         response = responses[0]
         text = _get_output(response)
 
-        # Compute usage
+        # Parse tool calls if any
+        tool_call_regex = re.compile(
+            r"<tool_call>(.*?)</tool_call>|<tool_call>(.*)", re.DOTALL)
+        tool_call_tuples = tool_call_regex.findall(text)
+        raw_function_calls = [
+            json.loads(match[0] if match[0] else match[1]) # TODO why match[0] or match[1]
+            for match in tool_call_tuples
+        ]
+        tool_calls = [
+            ChatCompletionMessageToolCall(
+                id=f"call_{uuid.uuid1()}",
+                type="function",
+                function=Function1(
+                    name=function_call["name"],
+                    arguments=json.dumps(function_call["arguments"], ensure_ascii=False),
+                ),
+            )
+            for function_call in raw_function_calls
+        ]
+
+        # Compute usage before text might be wiped out
         prompt_tokens = metadata.tokenizer.tokenize(prompt)
         completion_tokens  = metadata.tokenizer.tokenize(text)
+
+        if tool_calls:
+            tool_calls = ChatCompletionMessageToolCalls(root=tool_calls)
+            text = ""
+            finish_reason = ChatCompletionFinishReason.tool_calls
+        else:
+            tool_calls = None
+            finish_reason = ChatCompletionFinishReason.stop
 
         return CreateChatCompletionResponse(
             id=request_id,
@@ -164,10 +210,10 @@ class TritonLLMEngine(LLMEngine):
                 ChatCompletionChoice(
                     index=0,
                     message=ChatCompletionResponseMessage(
-                        content=text, role=role, function_call=None
+                        content=text, role=role, function_call=None, tool_calls=tool_calls,
                     ),
                     logprobs=None,
-                    finish_reason=ChatCompletionFinishReason.stop,
+                    finish_reason=finish_reason,
                 )
             ],
             created=created,
@@ -301,7 +347,7 @@ class TritonLLMEngine(LLMEngine):
             model=model,
             system_fingerprint=None,
             object=ObjectType.chat_completion_chunk,
-            usage=None
+            usage=None,
         )
 
     def _get_first_streaming_chat_response(
@@ -326,16 +372,37 @@ class TritonLLMEngine(LLMEngine):
         request_id: str,
         created: int,
         model: str,
-        response: tritonserver.InferenceResponse,
+        text: str,
+        tool_call_index: int,
+        buf: str,
+        final: bool,
     ) -> CreateChatCompletionStreamResponse:
-        text = _get_output(response)
+        finish_reason = None
+        if final:
+            if tool_call_index > -1:
+                finish_reason = ChatCompletionFinishReason.tool_calls
+            else:
+                finish_reason = ChatCompletionFinishReason.stop
+
+        if tool_call_index > -1 and buf != "":
+            tc = json.loads(buf)
+            delta = ChatCompletionStreamResponseDelta(
+                role=None, content="", function_call=None, tool_calls=[ChatCompletionMessageToolCallChunk(
+                    id=f"call_{uuid.uuid1()}", type="function", index=tool_call_index, function=Function2(
+                        name=tc["name"], arguments=json.dumps(tc["arguments"])
+                    )
+                )]
+            )
+        else:
+            delta = ChatCompletionStreamResponseDelta(
+                role=None, content=text, function_call=None
+            )
+
         choice = ChatCompletionStreamingResponseChoice(
             index=0,
-            delta=ChatCompletionStreamResponseDelta(
-                role=None, content=text, function_call=None
-            ),
+            delta=delta,
             logprobs=None,
-            finish_reason=ChatCompletionFinishReason.stop if response.final else None,
+            finish_reason=finish_reason,
         )
 
         chunk = self._get_streaming_chat_response_chunk(
@@ -350,9 +417,8 @@ class TritonLLMEngine(LLMEngine):
         model: str,
         role: str,
         responses: AsyncIterable,
-        # for usage
-        prompt: str,
-        stream_options: Optional[CreateChatCompletionStreamOptions],
+        prompt: str, # for usage
+        stream_options: CreateChatCompletionStreamOptions,
     ) -> AsyncIterator[str]:
         chunk = self._get_first_streaming_chat_response(
             request_id, created, model, role
@@ -360,13 +426,50 @@ class TritonLLMEngine(LLMEngine):
         yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
         consolidated_response: str = chunk.choices[0].delta.content # empty start
 
+        tool_call_start_token = "<tool_call>"
+        tool_call_end_token = "</tool_call>"
+        tool_call_index = -1
+        tool_call_buf = ""
+        parsing_tool_call = False
+        last_text = ""
+
         async for response in responses:
+            text = _get_output(response)
+
+            # we only need consolidated_response for usage
+            if stream_options is not None and stream_options.include_usage:
+                consolidated_response += text
+
+            # skip extra newline after tool call end token
+            if last_text == tool_call_end_token and text == "\n":
+                continue
+            # save last text for newline skipping logic
+            last_text = text
+
+            # check if we are parsing a tool call
+            if text == tool_call_start_token:
+                tool_call_index += 1
+                parsing_tool_call = True
+                continue
+            elif text == tool_call_end_token:
+                # write tool call if we reach end token
+                chunk = self._get_nth_streaming_chat_response(
+                    request_id, created, model, text, tool_call_index, tool_call_buf, response.final
+                )
+                tool_call_buf = ""
+                parsing_tool_call = False
+                yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
+                continue
+
+            # tool call buffer while we are parsing a tool call
+            if parsing_tool_call:
+                tool_call_buf += text
+                continue
+
             chunk = self._get_nth_streaming_chat_response(
-                request_id, created, model, response
+                request_id, created, model, text, tool_call_index, "", response.final
             )
             yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
-            if stream_options is not None and stream_options.include_usage:
-                consolidated_response += chunk.choices[0].delta.content
 
         # Compute usage after the loop
         if stream_options is not None and stream_options.include_usage:
@@ -439,6 +542,7 @@ class TritonLLMEngine(LLMEngine):
                 object=ObjectType.text_completion,
                 created=created,
                 model=model,
+                usage=None,
             )
             yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
             if stream_options is not None and stream_options.include_usage:
