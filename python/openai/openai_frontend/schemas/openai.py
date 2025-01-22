@@ -121,6 +121,10 @@ class CreateCompletionRequest(BaseModel):
         0,
         description="Number between -2.0 and 2.0. Positive values penalize new tokens based on whether they appear in the text so far, increasing the model's likelihood to talk about new topics.\n\n[See more information about frequency and presence penalties.](/docs/guides/text-generation/parameter-details)\n",
     )
+    repetition_penalty: Optional[confloat(gt=0, le=2.0)] = Field(
+        1,
+        description="Number between ]0, 2]. Float that penalizes new tokens based on whether they appear in the prompt and the generated text so far. Values > 1 encourage the model to use new tokens, while values < 1 encourage the model to repeat tokens.\n",
+    )
     seed: Optional[conint(ge=-9223372036854775808, le=9223372036854775807)] = Field(
         None,
         description="If specified, our system will make a best effort to sample deterministically, such that repeated requests with the same `seed` and parameters should return the same result.\n\nDeterminism is not guaranteed, and you should refer to the `system_fingerprint` response parameter to monitor changes in the backend.\n",
@@ -877,6 +881,10 @@ class CreateChatCompletionRequest(BaseModel):
         None,
         description='An object specifying the format that the model must output. Compatible with [GPT-4 Turbo](/docs/models/gpt-4-and-gpt-4-turbo) and all GPT-3.5 Turbo models newer than `gpt-3.5-turbo-1106`.\n\nSetting to `{ "type": "json_object" }` enables JSON mode, which guarantees the message the model generates is valid JSON.\n\n**Important:** when using JSON mode, you **must** also instruct the model to produce JSON yourself via a system or user message. Without this, the model may generate an unending stream of whitespace until the generation reaches the token limit, resulting in a long-running and seemingly "stuck" request. Also note that the message content may be partially cut off if `finish_reason="length"`, which indicates the generation exceeded `max_tokens` or the conversation exceeded the max context length.\n',
     )
+    repetition_penalty: Optional[confloat(gt=0, le=2.0)] = Field(
+        1,
+        description="Number between ]0, 2]. Float that penalizes new tokens based on whether they appear in the prompt and the generated text so far. Values > 1 encourage the model to use new tokens, while values < 1 encourage the model to repeat tokens.\n",
+    )
     seed: Optional[conint(ge=-9223372036854775808, le=9223372036854775807)] = Field(
         None,
         description="This feature is in Beta.\nIf specified, our system will make a best effort to sample deterministically, such that repeated requests with the same `seed` and parameters should return the same result.\nDeterminism is not guaranteed, and you should refer to the `system_fingerprint` response parameter to monitor changes in the backend.\n",
@@ -909,11 +917,11 @@ class CreateChatCompletionRequest(BaseModel):
         description="A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse. [Learn more](/docs/guides/safety-best-practices/end-user-ids).\n",
         examples=["user-1234"],
     )
-    function_call: Optional[
-        Union[FunctionCall3, ChatCompletionFunctionCallOption]
-    ] = Field(
-        None,
-        description='Deprecated in favor of `tool_choice`.\n\nControls which (if any) function is called by the model.\n`none` means the model will not call a function and instead generates a message.\n`auto` means the model can pick between generating a message or calling a function.\nSpecifying a particular function via `{"name": "my_function"}` forces the model to call that function.\n\n`none` is the default when no functions are present. `auto` is the default if functions are present.\n',
+    function_call: Optional[Union[FunctionCall3, ChatCompletionFunctionCallOption]] = (
+        Field(
+            None,
+            description='Deprecated in favor of `tool_choice`.\n\nControls which (if any) function is called by the model.\n`none` means the model will not call a function and instead generates a message.\n`auto` means the model can pick between generating a message or calling a function.\nSpecifying a particular function via `{"name": "my_function"}` forces the model to call that function.\n\n`none` is the default when no functions are present. `auto` is the default if functions are present.\n',
+        )
     )
     functions: Optional[List[ChatCompletionFunctions]] = Field(
         None,

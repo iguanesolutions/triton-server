@@ -97,6 +97,8 @@ def _create_trtllm_inference_request(
         inputs["frequency_penalty"] = np.float32([[request.frequency_penalty]])
     if request.presence_penalty is not None:
         inputs["presence_penalty"] = np.float32([[request.presence_penalty]])
+    if request.repetition_penalty is not None:
+        inputs["repetition_penalty"] = np.float32([[request.repetition_penalty]])
     if request.seed is not None:
         inputs["random_seed"] = np.uint64([[request.seed]])
     if request.temperature is not None:
