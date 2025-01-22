@@ -48,8 +48,10 @@ from schemas.openai import (
     ChatCompletionStreamingResponseChoice,
     ChatCompletionStreamResponseDelta,
     Choice,
+    CompletionUsage,
     CreateChatCompletionRequest,
     CreateChatCompletionResponse,
+    CreateChatCompletionStreamOptions,
     CreateChatCompletionStreamResponse,
     CreateCompletionRequest,
     CreateCompletionResponse,
@@ -143,7 +145,7 @@ class TritonLLMEngine(LLMEngine):
 
         if request.stream:
             return self._streaming_chat_iterator(
-                request_id, created, request.model, role, responses
+                request_id, created, request.model, role, responses, prompt, request.stream_options
             )
 
         # Response validation with decoupled models in mind
@@ -151,6 +153,10 @@ class TritonLLMEngine(LLMEngine):
         _validate_triton_responses_non_streaming(responses)
         response = responses[0]
         text = _get_output(response)
+
+        # Compute usage
+        prompt_tokens = metadata.tokenizer.tokenize(prompt)
+        completion_tokens  = metadata.tokenizer.tokenize(text)
 
         return CreateChatCompletionResponse(
             id=request_id,
@@ -168,6 +174,11 @@ class TritonLLMEngine(LLMEngine):
             model=request.model,
             system_fingerprint=None,
             object=ObjectType.chat_completion,
+            usage=CompletionUsage(
+                prompt_tokens = len(prompt_tokens),
+                completion_tokens = len(completion_tokens),
+                total_tokens = len(prompt_tokens) + len(completion_tokens),
+            ),
         )
 
     async def completion(
@@ -187,7 +198,7 @@ class TritonLLMEngine(LLMEngine):
         created = int(time.time())
         if request.stream:
             return self._streaming_completion_iterator(
-                request_id, created, metadata.name, responses
+                request_id, created, metadata.name, responses, request.prompt, request.stream_options
             )
 
         # Response validation with decoupled models in mind
@@ -202,6 +213,11 @@ class TritonLLMEngine(LLMEngine):
             logprobs=None,
             text=text,
         )
+
+        # Compute usage
+        prompt_tokens = metadata.tokenizer.tokenize(request.prompt)
+        completion_tokens  = metadata.tokenizer.tokenize(text)
+
         return CreateCompletionResponse(
             id=request_id,
             choices=[choice],
@@ -209,6 +225,11 @@ class TritonLLMEngine(LLMEngine):
             object=ObjectType.text_completion,
             created=created,
             model=metadata.name,
+            usage=CompletionUsage(
+                prompt_tokens = len(prompt_tokens),
+                completion_tokens = len(completion_tokens),
+                total_tokens = len(prompt_tokens) + len(completion_tokens),
+            ),
         )
 
     # TODO: This behavior should be tested further
@@ -280,6 +301,7 @@ class TritonLLMEngine(LLMEngine):
             model=model,
             system_fingerprint=None,
             object=ObjectType.chat_completion_chunk,
+            usage=None
         )
 
     def _get_first_streaming_chat_response(
@@ -328,15 +350,41 @@ class TritonLLMEngine(LLMEngine):
         model: str,
         role: str,
         responses: AsyncIterable,
+        # for usage
+        prompt: str,
+        stream_options: Optional[CreateChatCompletionStreamOptions],
     ) -> AsyncIterator[str]:
         chunk = self._get_first_streaming_chat_response(
             request_id, created, model, role
         )
         yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
+        consolidated_response: str = chunk.choices[0].delta.content # empty start
 
         async for response in responses:
             chunk = self._get_nth_streaming_chat_response(
                 request_id, created, model, response
+            )
+            yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
+            if stream_options is not None and stream_options.include_usage:
+                consolidated_response += chunk.choices[0].delta.content
+
+        # Compute usage after the loop
+        if stream_options is not None and stream_options.include_usage:
+            metadata = self.model_metadata.get(model)
+            prompt_tokens = metadata.tokenizer.tokenize(prompt)
+            completion_tokens  = metadata.tokenizer.tokenize(consolidated_response)
+            chunk = CreateChatCompletionStreamResponse(
+                id=request_id,
+                choices=[],
+                created=created,
+                model=model,
+                system_fingerprint=None,
+                object=ObjectType.chat_completion_chunk,
+                usage=CompletionUsage(
+                    prompt_tokens = len(prompt_tokens),
+                    completion_tokens = len(completion_tokens),
+                    total_tokens = len(prompt_tokens) + len(completion_tokens),
+                ),
             )
             yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
 
@@ -372,8 +420,10 @@ class TritonLLMEngine(LLMEngine):
             raise Exception("logit bias and log probs not currently supported")
 
     async def _streaming_completion_iterator(
-        self, request_id: str, created: int, model: str, responses: AsyncIterable
+        self, request_id: str, created: int, model: str, responses: AsyncIterable,
+        prompt: str, stream_options: Optional[CreateChatCompletionStreamOptions],
     ) -> AsyncIterator[str]:
+        consolidated_response: str = ""
         async for response in responses:
             text = _get_output(response)
             choice = Choice(
@@ -390,7 +440,27 @@ class TritonLLMEngine(LLMEngine):
                 created=created,
                 model=model,
             )
+            yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
+            if stream_options is not None and stream_options.include_usage:
+                consolidated_response += text
 
+        if stream_options is not None and stream_options.include_usage:
+            metadata = self.model_metadata.get(model)
+            prompt_tokens = metadata.tokenizer.tokenize(prompt)
+            completion_tokens  = metadata.tokenizer.tokenize(consolidated_response)
+            chunk = CreateCompletionResponse(
+                id=request_id,
+                choices=[],
+                system_fingerprint=None,
+                object=ObjectType.text_completion,
+                created=created,
+                model=model,
+                usage=CompletionUsage(
+                    prompt_tokens = len(prompt_tokens),
+                    completion_tokens = len(completion_tokens),
+                    total_tokens = len(prompt_tokens) + len(completion_tokens),
+                ),
+            )
             yield f"data: {chunk.model_dump_json(exclude_unset=True)}\n\n"
 
         yield "data: [DONE]\n\n"

@@ -581,6 +581,10 @@ class CreateChatCompletionStreamResponse(BaseModel):
     object: Object4 = Field(
         ..., description="The object type, which is always `chat.completion.chunk`."
     )
+    usage: Optional[CompletionUsage] = Field(
+        ...,
+        description="Usage statistics for the completion request.",
+    )
 
 
 class CreateChatCompletionImageResponse(BaseModel):
@@ -897,6 +901,10 @@ class CreateChatCompletionRequest(BaseModel):
         False,
         description="If set, partial message deltas will be sent, like in ChatGPT. Tokens will be sent as data-only [server-sent events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events#Event_stream_format) as they become available, with the stream terminated by a `data: [DONE]` message. [Example Python code](https://cookbook.openai.com/examples/how_to_stream_completions).\n",
     )
+    stream_options: Optional[CreateChatCompletionStreamOptions] = Field(
+        None,
+        description="Streaming options for the chat completion.",
+    )
     temperature: Optional[confloat(ge=0.0, le=2.0)] = Field(
         0.7,
         description="What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.\n\nWe generally recommend altering this or `top_p` but not both.\n",
@@ -931,8 +939,13 @@ class CreateChatCompletionRequest(BaseModel):
     )
 
 
-# Additional Aliases for Convenience
+class CreateChatCompletionStreamOptions(BaseModel):
+    include_usage: Optional[bool] = Field(
+        False, description="Include usage information in the response.\n"
+    )
 
+
+# Additional Aliases for Convenience
 
 class ObjectType:
     model = Object5.model
