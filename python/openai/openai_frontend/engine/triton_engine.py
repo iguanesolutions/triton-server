@@ -147,6 +147,9 @@ class TritonLLMEngine(LLMEngine):
             tools=tools
         )
 
+        if request.seed is None:
+            request.seed = random.randint(-9223372036854775808, 9223372036854775807)
+
         # Convert to Triton request format and perform inference
         responses = metadata.model.async_infer(
             metadata.request_converter(metadata.model, prompt, request)
@@ -233,6 +236,9 @@ class TritonLLMEngine(LLMEngine):
         # Validate request and convert to Triton format
         metadata = self.model_metadata.get(request.model)
         self._validate_completion_request(request, metadata)
+
+        if request.seed is None:
+            request.seed = random.randint(-9223372036854775808, 9223372036854775807)
 
         # Convert to Triton request format and perform inference
         responses = metadata.model.async_infer(
