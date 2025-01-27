@@ -120,6 +120,12 @@ def parse_args():
         default="0.0.0.0",
         help="Address/host of frontends (default: '0.0.0.0')",
     )
+    triton_group.add_argument(
+        "--metrics-configuration",
+        type=dict[str, dict[str, str]],
+        default={},
+        help="Configuration for metric reporting.",
+    )
 
     # OpenAI-Compatible Frontend (FastAPI)
     openai_group = parser.add_argument_group("Triton OpenAI-Compatible Frontend")
@@ -163,6 +169,7 @@ def main():
     # Initialize a Triton Inference Server pointing at LLM models
     server: tritonserver.Server = tritonserver.Server(
         model_repository=args.model_repository,
+        metrics_configuration=args.metrics_configuration,
         log_verbose=args.tritonserver_log_verbose_level,
         log_info=True,
         log_warn=True,
